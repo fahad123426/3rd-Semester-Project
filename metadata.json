@@ -1,0 +1,6 @@
+{
+  "name": "Assistant Diagnosis System",
+  "description": "A web-based application for patients to upload medical reports, get AI-driven analysis, and receive recommendations for relevant specialist doctors from contracted clinics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
