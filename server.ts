@@ -8,9 +8,14 @@ import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import fs from 'fs';
 import cors from 'cors';
+import { createClient } from '@supabase/supabase-js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://kasjghfuorswuitigcrp.supabase.co';
+const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_vren8ESwoJNJErTb3kO9DA_c79-KOkw';
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const db = new Database('database.db');
 const PORT = 3000;
@@ -19,15 +24,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 // Initialize Database
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT,
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE,
     role TEXT CHECK(role IN ('patient', 'doctor', 'admin'))
   );
 
   CREATE TABLE IF NOT EXISTS doctors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    userId INTEGER,
+    userId TEXT,
     name TEXT,
     specialty TEXT,
     contact TEXT,
@@ -38,7 +42,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    patientId INTEGER,
+    patientId TEXT,
     fileName TEXT,
     originalName TEXT,
     analysisResult TEXT,
@@ -71,20 +75,44 @@ app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
 // Middleware
-const authenticateToken = (req: any, res: any, next: any) => {
+const authenticateToken = async (req: any, res: any, next: any) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) return res.sendStatus(401);
 
-  jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-    if (err) return res.sendStatus(403);
-    req.user = user;
-    next();
-  });
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  
+  if (error || !user) {
+    console.error('Supabase Auth Error:', error);
+    return res.sendStatus(403);
+  }
+
+  const role = user.user_metadata?.role || 'patient';
+  
+  // Sync user to local DB if not exists
+  try {
+    const existing = db.prepare('SELECT id FROM users WHERE id = ?').get(user.id);
+    if (!existing) {
+      db.prepare('INSERT INTO users (id, email, role) VALUES (?, ?, ?)')
+        .run(user.id, user.email, role);
+    } else {
+      // Update role if changed
+      db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, user.id);
+    }
+  } catch (err) {
+    console.error('User sync error:', err);
+  }
+
+  req.user = {
+    id: user.id,
+    email: user.email,
+    role: role
+  };
+  next();
 };
 
 const isAdmin = (req: any, res: any, next: any) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied. Admin role required.' });
   next();
 };
 
@@ -126,9 +154,19 @@ app.get('/api/me', authenticateToken, (req: any, res) => {
 // Doctor Management (Admin only)
 app.post('/api/doctors', authenticateToken, isAdmin, (req, res) => {
   const { name, specialty, contact, location, clinicName } = req.body;
-  const stmt = db.prepare('INSERT INTO doctors (name, specialty, contact, location, clinicName) VALUES (?, ?, ?, ?, ?)');
-  const result = stmt.run(name, specialty, contact, location, clinicName);
-  res.json({ id: result.lastInsertRowid });
+  
+  if (!name || !specialty) {
+    return res.status(400).json({ error: 'Name and specialty are required' });
+  }
+
+  try {
+    const stmt = db.prepare('INSERT INTO doctors (name, specialty, contact, location, clinicName) VALUES (?, ?, ?, ?, ?)');
+    const result = stmt.run(name, specialty, contact || '', location || '', clinicName || '');
+    res.json({ id: result.lastInsertRowid });
+  } catch (err: any) {
+    console.error('Add doctor error:', err);
+    res.status(500).json({ error: 'Failed to add doctor' });
+  }
 });
 
 app.get('/api/doctors', authenticateToken, (req, res) => {

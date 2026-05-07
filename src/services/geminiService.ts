@@ -9,17 +9,28 @@ export interface AnalysisResult {
   vitalMarkers: { name: string; value: string; status: 'normal' | 'high' | 'low' }[];
 }
 
-export const analyzeReport = async (text: string): Promise<AnalysisResult> => {
-  const prompt = `Analyze the following medical report text and extract key findings. 
+export const analyzeReport = async (text: string, fileData?: { data: string; mimeType: string }): Promise<AnalysisResult> => {
+  const prompt = `Analyze the following medical report and extract key findings. 
   Identify the main condition, provide a brief summary, suggest a recommended doctor specialty (e.g., Cardiologist, Diabetologist, etc.), 
   and list vital markers found with their status.
   
-  Report Text:
+  Additional Context:
   ${text}`;
+
+  const parts: any[] = [{ text: prompt }];
+  
+  if (fileData) {
+    parts.push({
+      inlineData: {
+        data: fileData.data,
+        mimeType: fileData.mimeType
+      }
+    });
+  }
 
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
-    contents: prompt,
+    contents: { parts },
     config: {
       responseMimeType: "application/json",
       responseSchema: {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LogIn, UserPlus, LineChart, FileText, Users, LogOut, Upload, ShieldCheck, Search, Info } from 'lucide-react';
+import { LogIn, UserPlus, LineChart, FileText, Users, LogOut, Upload, ShieldCheck, Search, Info, Trash2, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeReport, AnalysisResult } from './services/geminiService';
 import { supabase } from './supabaseClient';
@@ -159,31 +159,98 @@ const Register = ({ onSwitch, onSuccess }: { onSwitch: () => void, onSuccess: (e
 
 const History = ({ token }: { token: string }) => {
   const [reports, setReports] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchHistory = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('reports')
+      .select(`
+        *,
+        doctors (
+          name
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    if (!error && data) {
+      // Generate signed URLs for each report that has a file_path
+      const reportsWithUrls = await Promise.all(data.map(async (report) => {
+        if (report.file_path) {
+          const { data: shareData, error: shareError } = await supabase.storage
+            .from('app-files')
+            .createSignedUrl(report.file_path, 3600); // 1 hour
+            
+          if (!shareError) {
+            return { ...report, signedUrl: shareData.signedUrl };
+          }
+        }
+        return report;
+      }));
+      setReports(reportsWithUrls);
+    }
+    setLoading(false);
+  };
 
   useEffect(() => {
-    fetch('/api/history', { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
-      .then(setReports);
+    fetchHistory();
   }, [token]);
+
+  const handleDelete = async (reportId: string, filePath: string | null) => {
+    if (!confirm('Are you sure you want to delete this clinical record? This action cannot be undone.')) return;
+
+    try {
+      // 1. Delete from database
+      const { error: dbError } = await supabase
+        .from('reports')
+        .delete()
+        .eq('id', reportId);
+      
+      if (dbError) throw dbError;
+
+      // 2. Delete from storage if file exists
+      if (filePath) {
+        await supabase.storage.from('app-files').remove([filePath]);
+      }
+
+      setReports(reports.filter(r => r.id !== reportId));
+    } catch (err: any) {
+      alert('Failed to delete report: ' + err.message);
+    }
+  };
+
+  if (loading) return <div className="p-8 text-center text-slate-400">Loading clinical records...</div>;
 
   return (
     <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 mb-1">
-          <FileText className="text-indigo-600" /> Medical History
-        </h2>
-        <p className="text-sm text-slate-500">Access all your verified records and analysis history</p>
+      <div className="mb-6 flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 mb-1">
+            <FileText className="text-indigo-600" /> Medical History
+          </h2>
+          <p className="text-sm text-slate-500">Access all your verified records and analysis history</p>
+        </div>
       </div>
       <div className="grid gap-6">
         {reports.map((report: any) => {
-          const analysis = JSON.parse(report.analysisResult);
+          const analysis = report.analysis_result;
+          const doctorName = report.doctors?.name;
           const needsAttention = analysis.vitalMarkers.some((m: any) => m.status !== 'normal');
+          
           return (
-            <div key={report.id} className="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 hover:shadow-md transition-shadow">
-              <div className="flex justify-between items-start mb-6">
+            <div key={report.id} className="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 hover:shadow-md transition-shadow relative group">
+              <button 
+                onClick={() => handleDelete(report.id, report.file_path)}
+                className="absolute top-6 right-6 p-2 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                title="Delete Record"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+
+              <div className="flex justify-between items-start mb-6 pr-10">
                 <div>
                   <h3 className="font-bold text-xl text-slate-900 mb-1">{analysis.condition}</h3>
-                  <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">Patient: {report.patientName} • {new Date(report.createdAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}</p>
+                  <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">Record ID: {report.id.slice(0, 8)} • {new Date(report.created_at).toLocaleDateString(undefined, { dateStyle: 'medium' })}</p>
                 </div>
                 <span className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${needsAttention ? 'bg-rose-50 text-rose-600 border-rose-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
                   {needsAttention ? 'Attention Required' : 'Normal Result'}
@@ -199,22 +266,33 @@ const History = ({ token }: { token: string }) => {
                   </div>
                 ))}
               </div>
-              {report.doctorName && (
-                <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center text-indigo-600 font-bold italic">
-                      {report.doctorName.charAt(0)}
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-slate-400 uppercase font-bold">Recommended Specialist</p>
-                      <p className="font-bold text-slate-900">{report.doctorName}</p>
-                    </div>
-                  </div>
-                  {report.fileName && (
-                    <a href={`/uploads/${report.fileName}`} target="_blank" className="text-xs font-bold text-indigo-600 hover:underline px-4 py-2 bg-indigo-50 rounded-lg">View Full Report</a>
+              
+              <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  {doctorName && (
+                    <>
+                      <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center text-indigo-600 font-bold italic">
+                        {doctorName.charAt(0)}
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-400 uppercase font-bold">Recommended Specialist</p>
+                        <p className="font-bold text-slate-900">{doctorName}</p>
+                      </div>
+                    </>
                   )}
                 </div>
-              )}
+                
+                {report.signedUrl && (
+                  <a 
+                    href={report.signedUrl} 
+                    target="_blank" 
+                    rel="noreferrer" 
+                    className="flex items-center gap-2 px-6 py-2.5 bg-indigo-50 text-indigo-700 font-bold rounded-xl hover:bg-indigo-100 transition-all text-sm shadow-sm"
+                  >
+                    <ExternalLink className="w-4 h-4" /> View Full Report
+                  </a>
+                )}
+              </div>
             </div>
           );
         })}
@@ -231,26 +309,40 @@ const History = ({ token }: { token: string }) => {
 const Doctors = ({ token, userRole }: { token: string, userRole: string }) => {
   const [doctors, setDoctors] = useState<any[]>([]);
   const [showAdd, setShowAdd] = useState(false);
-  const [newDoctor, setNewDoctor] = useState({ name: '', specialty: '', contact: '', location: '', clinicName: '' });
+  const [error, setError] = useState('');
+  const [newDoctor, setNewDoctor] = useState({ name: '', specialty: '', contact: '', location: '', clinic_name: '' });
 
-  const fetchDoctors = () => {
-    fetch('/api/doctors', { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
-      .then(setDoctors);
+  const fetchDoctors = async () => {
+    const { data, error } = await supabase
+      .from('doctors')
+      .select('*')
+      .order('name');
+    
+    if (!error) setDoctors(data || []);
   };
 
-  useEffect(fetchDoctors, [token]);
+  useEffect(() => {
+    fetchDoctors();
+  }, []);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch('/api/doctors', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify(newDoctor)
-    });
-    if (res.ok) {
-      setShowAdd(false);
-      fetchDoctors();
+    setError('');
+    
+    try {
+      const { error: insertError } = await supabase
+        .from('doctors')
+        .insert([newDoctor]);
+
+      if (insertError) {
+        setError(insertError.message);
+      } else {
+        setShowAdd(false);
+        setNewDoctor({ name: '', specialty: '', contact: '', location: '', clinic_name: '' });
+        fetchDoctors();
+      }
+    } catch (err) {
+      setError('Connection error occurred');
     }
   };
 
@@ -272,7 +364,16 @@ const Doctors = ({ token, userRole }: { token: string, userRole: string }) => {
 
       {showAdd && (
         <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="mb-10 p-8 bg-indigo-50 rounded-2xl border border-indigo-100 overflow-hidden">
-          <h3 className="font-bold text-indigo-900 mb-6">Register Contracted Clinical Specialist</h3>
+          <h3 className="font-bold text-indigo-900 mb-2">Register Contracted Clinical Specialist</h3>
+          <p className="text-xs text-indigo-400 mb-6">Enter official credentials to add the specialist to the clinical directory.</p>
+          
+          {error && (
+            <div className="mb-6 p-4 bg-rose-50 border border-rose-100 rounded-xl flex items-center gap-3 text-rose-600">
+              <Info className="w-4 h-4" />
+              <p className="text-xs font-bold">{error}</p>
+            </div>
+          )}
+
           <form onSubmit={handleAdd} className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-indigo-400 uppercase ml-1">Full Name</label>
@@ -292,7 +393,7 @@ const Doctors = ({ token, userRole }: { token: string, userRole: string }) => {
             </div>
             <div className="space-y-1 md:col-span-2">
               <label className="text-[10px] font-bold text-indigo-400 uppercase ml-1">Clinic Name</label>
-              <input placeholder="Main City Clinic" value={newDoctor.clinicName} onChange={e => setNewDoctor({...newDoctor, clinicName: e.target.value})} className="w-full px-4 py-2 rounded-lg border border-indigo-100 focus:ring-2 focus:ring-indigo-500 bg-white" required />
+              <input placeholder="Main City Clinic" value={newDoctor.clinic_name} onChange={e => setNewDoctor({...newDoctor, clinic_name: e.target.value})} className="w-full px-4 py-2 rounded-lg border border-indigo-100 focus:ring-2 focus:ring-indigo-500 bg-white" required />
             </div>
             <div className="md:col-span-2 flex gap-3 mt-4">
               <button type="submit" className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md border border-indigo-700">Confirm Contract</button>
@@ -315,7 +416,7 @@ const Doctors = ({ token, userRole }: { token: string, userRole: string }) => {
               </div>
               <p className="text-indigo-600 text-sm font-bold uppercase tracking-tight mb-3">{doc.specialty}</p>
               <div className="space-y-1 text-xs text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-100">
-                <p className="flex items-center gap-2 font-medium">🏢 {doc.clinicName}</p>
+                <p className="flex items-center gap-2 font-medium">🏢 {doc.clinic_name}</p>
                 <p className="flex items-center gap-2">📍 {doc.location}</p>
                 <p className="flex items-center gap-2 font-mono text-indigo-700">📞 {doc.contact}</p>
               </div>
@@ -350,52 +451,112 @@ const UploadReport = ({ token }: { token: string }) => {
     setRecommendation(null);
 
     try {
-      // In a real app, we'd extract text from file. Here we'll simulate reading text or just send prompt with file context if we had a proper OCR gateway.
-      // For this demo, let's assume we extract some text or let the user provide it.
-      // Better yet, let's just prompt Gemini with hypothetical data extracted from the file name/type for this simulation.
-      // ACTUAL: We'll read the file as text if it's small or just use a mock text for the "elements level" requirement.
-      
       const reader = new FileReader();
+      
+      const isImage = file.type.startsWith('image/');
+      
       reader.onload = async (e) => {
-        const text = e.target?.result as string || "Simulated Report: Glucose 140 mg/dL, WBC 8000, BP 120/80";
-        const analysis = await analyzeReport(text);
-        setResult(analysis);
-        
-        // Find recommended doctor
-        const docsRes = await fetch('/api/doctors', { headers: { 'Authorization': `Bearer ${token}` } });
-        const doctors = await docsRes.json();
-        const recommended = doctors.find((d: any) => d.specialty.toLowerCase().includes(analysis.recommendedSpecialty.toLowerCase()));
-        setRecommendation(recommended);
-        
-        setAnalyzing(false);
+        const result = e.target?.result as string;
+        if (isImage) {
+          // Extracts base64 from data URL
+          const base64 = result.split(',')[1];
+          await processAnalysis("", file.name, { data: base64, mimeType: file.type });
+        } else {
+          await processAnalysis(result || "", file.name);
+        }
       };
-      reader.readAsText(file);
+
+      if (isImage) {
+        reader.readAsDataURL(file);
+      } else {
+        reader.readAsText(file);
+      }
     } catch (err) {
       console.error(err);
       setAnalyzing(false);
     }
   };
 
+  const processAnalysis = async (text: string, fileName: string, fileData?: { data: string; mimeType: string }) => {
+    setAnalyzing(true);
+    try {
+      const analysis = await analyzeReport(text, fileData);
+      setResult(analysis);
+      
+      const { data: doctors } = await supabase
+        .from('doctors')
+        .select('*')
+        .ilike('specialty', `%${analysis.recommendedSpecialty}%`);
+        
+      setRecommendation(doctors?.[0] || null);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const useDemoData = () => {
+    const demoText = `Patient: Sample User
+Date: May 07, 2026
+Findings:
+- Glucose: 165 mg/dL (Target: 70-99)
+- Blood Pressure: 142/92 mmHg
+- WBC Count: 10,500 cells/mcL
+- Hemoglobin: 13.2 g/dL
+Summary: Patient exhibits elevated glucose and borderline high blood pressure. Recommendation for metabolic screening.`;
+    
+    // Create a dummy file object for consistency in the save logic
+    const dummyFile = new File([demoText], "demo_report.txt", { type: "text/plain" });
+    setFile(dummyFile);
+    processAnalysis(demoText, "demo_report.txt");
+  };
+
   const saveReport = async () => {
     if (!result || !file) return;
     setSaving(true);
-    const formData = new FormData();
-    formData.append('report', file);
-    formData.append('analysisResult', JSON.stringify(result));
-    formData.append('recommendedDoctorId', recommendation?.id || '');
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
 
-    const res = await fetch('/api/reports', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` },
-      body: formData
-    });
-    if (res.ok) {
-      alert('Report saved to history!');
+      // 1. Upload to Supabase Storage
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random().toString(36).substring(2, 15)}.${fileExt}`;
+      const filePath = `${user.id}/reports/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('app-files')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      // 2. Save record to Database
+      const { error: insertError } = await supabase
+        .from('reports')
+        .insert([{
+          patient_id: user.id,
+          original_name: file.name,
+          file_path: filePath,
+          analysis_result: result,
+          recommended_doctor_id: recommendation?.id || null
+        }]);
+
+      if (insertError) {
+        // Cleanup if DB fails
+        await supabase.storage.from('app-files').remove([filePath]);
+        throw insertError;
+      }
+
+      alert('Report analyzed and saved to your history!');
       setFile(null);
       setResult(null);
       setRecommendation(null);
+    } catch (err: any) {
+      alert('Failed to save report: ' + err.message);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   return (
@@ -407,28 +568,36 @@ const UploadReport = ({ token }: { token: string }) => {
         <p className="text-sm text-slate-500">Securely upload your clinical documents for AI-driven analysis</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-5">
-          <div className="p-8 border-2 border-dashed border-slate-200 rounded-3xl bg-white text-center hover:border-indigo-300 hover:bg-indigo-50/30 transition-all cursor-pointer group">
-            <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-6 group-hover:bg-indigo-100 transition-colors">
-              <Upload className="w-8 h-8 text-slate-300 group-hover:text-indigo-600" />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="lg:col-span-5">
+            <div className="p-8 border-2 border-dashed border-slate-200 rounded-3xl bg-white text-center hover:border-indigo-300 hover:bg-indigo-50/30 transition-all cursor-pointer group">
+              <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-6 group-hover:bg-indigo-100 transition-colors">
+                <Upload className="w-8 h-8 text-slate-300 group-hover:text-indigo-600" />
+              </div>
+              <p className="text-slate-900 font-bold mb-1">Drop your report here</p>
+              <p className="text-xs text-slate-400 mb-6 font-medium">Supports images or .txt files for analysis</p>
+              <input type="file" onChange={handleFileChange} className="hidden" id="report-file" accept="image/*,.txt" />
+              <label htmlFor="report-file" className="inline-block px-8 py-2.5 bg-indigo-600 text-white font-bold rounded-xl cursor-pointer hover:bg-indigo-700 transition-all shadow-md shadow-indigo-100">
+                Select File
+              </label>
+              {file && <p className="mt-6 font-bold text-indigo-600 text-sm bg-indigo-50 py-2 rounded-lg border border-indigo-100 italic">"{file.name}" ready</p>}
             </div>
-            <p className="text-slate-900 font-bold mb-1">Drop your report here</p>
-            <p className="text-xs text-slate-400 mb-6 font-medium">Supports PDF, JPG, PNG or TXT</p>
-            <input type="file" onChange={handleFileChange} className="hidden" id="report-file" />
-            <label htmlFor="report-file" className="inline-block px-8 py-2.5 bg-indigo-600 text-white font-bold rounded-xl cursor-pointer hover:bg-indigo-700 transition-all shadow-md shadow-indigo-100">
-              Select File
-            </label>
-            {file && <p className="mt-6 font-bold text-indigo-600 text-sm bg-indigo-50 py-2 rounded-lg border border-indigo-100 italic">"{file.name}" ready</p>}
-          </div>
 
-          {file && !result && (
-            <button onClick={handleUpload} disabled={analyzing} className="w-full mt-6 py-4 bg-indigo-900 text-white font-bold rounded-2xl shadow-xl hover:bg-indigo-950 transition-all flex items-center justify-center gap-3">
-              {analyzing ? <div className="animate-spin rounded-full h-5 w-5 border-2 border-white/50 border-t-white" /> : <LineChart className="w-5 h-5" />}
-              {analyzing ? 'System Analyzing...' : 'Begin Diagnostic Analysis'}
-            </button>
-          )}
-        </div>
+            <div className="mt-6 grid grid-cols-1 gap-4">
+              {file && !result && (
+                <button onClick={handleUpload} disabled={analyzing} className="w-full py-4 bg-indigo-900 text-white font-bold rounded-2xl shadow-xl hover:bg-indigo-950 transition-all flex items-center justify-center gap-3">
+                  {analyzing ? <div className="animate-spin rounded-full h-5 w-5 border-2 border-white/50 border-t-white" /> : <LineChart className="w-5 h-5" />}
+                  {analyzing ? 'System Analyzing...' : 'Begin Diagnostic Analysis'}
+                </button>
+              )}
+              
+              {!result && (
+                <button onClick={useDemoData} disabled={analyzing} className="w-full py-3 bg-emerald-50 text-emerald-700 font-bold rounded-xl border border-emerald-100 hover:bg-emerald-100 transition-all flex items-center justify-center gap-2">
+                  <Info className="w-4 h-4" /> Try with Demo Report
+                </button>
+              )}
+            </div>
+          </div>
 
         <div className="lg:col-span-7">
           {result ? (
