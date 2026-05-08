@@ -179,7 +179,7 @@ const History = ({ token }: { token: string }) => {
         if (report.file_path) {
           const { data: shareData, error: shareError } = await supabase.storage
             .from('app-files')
-            .createSignedUrl(report.file_path, 3600); // 1 hour
+            .createSignedUrl(report.file_path, 3600, { download: false }); // inline viewing
             
           if (!shareError) {
             return { ...report, signedUrl: shareData.signedUrl };
@@ -527,7 +527,7 @@ Summary: Patient exhibits elevated glucose and borderline high blood pressure. R
 
       const { error: uploadError } = await supabase.storage
         .from('app-files')
-        .upload(filePath, file);
+        .upload(filePath, file, { contentType: file.type || 'application/octet-stream' });
 
       if (uploadError) throw uploadError;
 
